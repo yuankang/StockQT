@@ -1,165 +1,139 @@
 package main
 
 import (
-    "fmt"
-    "io/ioutil"
-    "net/http"
-    "strings"
-    "time"
+	"fmt"
+	"io/ioutil"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
+	"github.com/mattn/go-runewidth"
 )
 
-const (
-    apiURL      = "http://qt.gtimg.cn/q=sz002304" // 腾讯财经API地址
-    stockSymbol = "sz002304"                      // 洋河股份在深圳交易所的股票代码
-)
+// Stock represents the data structure for stock information.
+type Stock struct {
+	Name          string
+	Code          string
+	YesterdayClose string
+	TodayOpen     string
+	Volume        string
+	High          string
+	Low           string
+	ChangeRate    string
+	ChangeAmount  string
+	CurrentPrice  string
+	Buy1          string
+	Buy2          string
+	Sell1         string
+	Sell2         string
+}
 
-func fetchStockPrice() (string, error) {
-    resp, err := http.Get(apiURL)
-    if err != nil {
-        return "", err
-    }
-    defer resp.Body.Close()
+// fetchStockData retrieves stock data from the URL and returns it as a slice of Stock structs.
+func fetchStockData() ([]Stock, error) {
+	url := "http://qt.gtimg.cn/q=sh000001,sz002304,sh600519"
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
 
-    body, err := ioutil.ReadAll(resp.Body)
-    if err != nil {
-        return "", err
-    }
+	// Decode GBK encoded response body to UTF-8
+	reader := transform.NewReader(resp.Body, simplifiedchinese.GBK.NewDecoder())
+	body, err := ioutil.ReadAll(reader)
+	if err != nil {
+		return nil, err
+	}
 
-    data := string(body)
-    // 返回的数据格式类似于：v_sz002304="51~洋河股份~168.00~169.00~167.00~168.50~...
-    parts := strings.Split(data, "~")
-    if len(parts) < 4 {
-        return "", fmt.Errorf("数据解析失败")
-    }
+	lines := strings.Split(string(body), ";")
+	stocks := []Stock{}
 
-    return parts[3], nil // parts[3] 为当前价格
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		data := strings.Split(line, "~")
+		if len(data) < 41 {
+			continue
+		}
+
+		// Convert volume to billions with 2 decimal precision
+		volume, err := strconv.ParseFloat(data[6], 64)
+		if err != nil {
+			volume = 0.0
+		}
+		volumeInBillions := fmt.Sprintf("%.2f", volume/1e8)
+
+		stocks = append(stocks, Stock{
+			Name:          data[1],
+			Code:          data[2],
+			YesterdayClose: data[4],
+			TodayOpen:     data[5],
+			Volume:        volumeInBillions, // 使用转换后的成交量
+			High:          data[33],
+			Low:           data[34],
+			ChangeRate:    data[32],
+			ChangeAmount:  data[31],
+			CurrentPrice:  data[3],
+			Buy1:          data[9],
+			Buy2:          data[11],
+			Sell1:         data[19],
+			Sell2:         data[21],
+		})
+	}
+
+	return stocks, nil
+}
+
+// padString adjusts the string width to ensure consistent column alignment.
+func padString(s string, width int) string {
+	return s + strings.Repeat(" ", width-runewidth.StringWidth(s))
+}
+
+// printStocks prints stock information in the specified format.
+func printStocks(stocks []Stock) {
+	headers := []string{"名称", "代码", "昨日收盘", "今日开盘", "成交量(亿)", "今日最高", "今日最低", "涨跌幅", "涨跌额", "当前价格", "买1价", "买2价", "卖1价", "卖2价"}
+	columnWidths := []int{10, 8, 10, 10, 12, 10, 10, 8, 8, 10, 8, 8, 8, 8}
+
+	// Print headers
+	for i, header := range headers {
+		fmt.Print(padString(header, columnWidths[i]))
+	}
+	fmt.Println()
+
+	// Print stock data
+	for _, stock := range stocks {
+		values := []string{
+			stock.Name, stock.Code, stock.YesterdayClose, stock.TodayOpen, stock.Volume,
+			stock.High, stock.Low, stock.ChangeRate, stock.ChangeAmount, stock.CurrentPrice,
+			stock.Buy1, stock.Buy2, stock.Sell1, stock.Sell2,
+		}
+		for i, value := range values {
+			fmt.Print(padString(value, columnWidths[i]))
+		}
+		fmt.Println()
+	}
+}
+
+//2022年01月02日10:30:20
+func GetYMDHMS0() string {
+	t := time.Now()
+	return fmt.Sprintf("%d年%02d月%02d日%02d:%02d:%02d",
+		t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second())
 }
 
 func main() {
 	for {
-        price, err := fetchStockPrice()
-        if err != nil {
-            fmt.Println("获取股票价格失败:", err)
-            continue
-        }
-        fmt.Printf("当前洋河股份价格: %s\n", price)
+		stocks, err := fetchStockData()
+		if err != nil {
+			fmt.Println("Error fetching stock data:", err)
+			return
+		}
 
-		time.Sleep(60*time.Second)
+		fmt.Println("更新时间: ", GetYMDHMS0())
+		printStocks(stocks)
+		time.Sleep(1 * time.Minute)
 	}
 }
-
-/*
-实时抓取 股票价格 低于阈值直接买入
-实时抓取 股票价格 高于阈值直接卖出
-
-名称	  ID	  当前   成本   持股  本金   盈利  买1    买2	 买3    买手  卖1    卖2    卖3    卖比  自动交易
-洋河股份  002304  81.80  80.00  1000  80000  500   80.00  79.00  78.00  10	  88.00  89.00  90.00  30    自动/暂停
-
-当前多次出现低于买1价格, 是不是每次都买?
-当天出现低于买3价格, 买入后 是否继续买?
-是否控制 最大本金?
-
-要每秒获取中国A股市场洋河股份（002304）的实时股票价格，可以考虑国内的一些股票数据API服务。
-东方财富API http://push2.eastmoney.com/api/qt/stock/sse?secid=1.000001  免费可用
-新浪财经API http://hq.sinajs.cn/list=sz002304	免费不可用
-腾讯财经API http://qt.gtimg.cn/q=sz002304		免费可用
-            http://qt.gtimg.cn/q=sh000001		上证指数
-			http://qt.gtimg.cn/q=sz002304,sh600519 一次查多个
-新浪财经和腾讯财经API不适合高频率调用，如果你持续每秒调用，可能会被限制访问。
-每秒请求一次可能会导致IP被限制。实际应用中，如果不需要每秒更新，可以适当降低频率，例如每分钟更新。
-腾讯财经的公开接口并没有提供非常高的请求频率支持，通常每分钟请求几次是安全的，超过这个频率，可能会被限制或拉入黑名单。
-通常，API接口的请求频率是每秒1次到每分钟5次，过于频繁的请求可能会被认为是恶意访问。
-专业数据平台（如东方财富、聚宽）提供A股的实时数据API，但这些API通常是付费服务，适合高频和高精度数据需求。
-
-## http://qt.gtimg.cn/q=sz002304 返回数据格式
-腾讯API的返回数据中，各个字段使用 ~ 分隔，第4个字段（索引3）是当前股票价格。
-v_sz002304="51~洋河股份~002304~87.91~86.15~86.16~137460~75400~62060~87.91~186~87.90~182~87.89~61~87.88~555~87.87~1~87.92~32~87.93~52~87.94~32~87.95~31~87.96~25~~20241106151418~1.76~2.04~88.78~85.10~87.91/137460/1193470310~137460~119347~0.91~15.78~~88.78~85.10~4.27~1321.03~1324.32~2.48~94.77~77.54~1.10~813~86.82~11.58~13.22~~~1.09~119347.0310~0.0000~0~ ~GP-A~-16.47~3.88~5.30~15.69~13.05~117.10~71.58~1.37~-0.54~9.60~1502706768~1506445074~70.27~1.58~1502706768~~~-24.55~0.10~~CNY~0~~88.00~-754";
-
-字段解释
-前缀“sz”代表深圳股票，“sh”代表上海股票
-51 - 市场标识（51表示深圳市场）。
-洋河股份 - 股票名称。
-002304 - 股票代码。
-87.91 - 当前价格。
-86.15 - 昨日收盘价。
-86.16 - 今日开盘价。
-137460 - 成交量（手）。
-75400 - 外盘（买入量）。
-62060 - 内盘（卖出量）。
-87.91 - 买一价。
-186 - 买一量（手）。
-87.90 - 买二价。
-182 - 买二量。
-87.89 - 买三价。
-61 - 买三量。
-87.88 - 买四价。
-555 - 买四量。
-87.87 - 买五价。
-1 - 买五量。
-87.92 - 卖一价。
-32 - 卖一量。
-87.93 - 卖二价。
-52 - 卖二量。
-87.94 - 卖三价。
-32 - 卖三量。
-87.95 - 卖四价。
-31 - 卖四量。
-87.96 - 卖五价。
-25 - 卖五量。
-空字段。
-20241106151418 - 时间戳（格式：YYYYMMDDHHMMSS）。
-1.76 - 涨跌额。
-2.04 - 涨跌幅（百分比）。
-88.78 - 最高价。
-85.10 - 最低价。
-87.91/137460/1193470310 - 最新价/成交量/成交金额。
-137460 - 成交量（重复）。
-119347 - 成交金额（单位：元）。
-0.91 - 换手率（百分比）。
-15.78 - 市盈率（动态）。
-空字段。
-88.78 - 今日最高。
-85.10 - 今日最低。
-4.27 - 振幅（百分比）。
-1321.03 - 流通市值（亿元）。
-1324.32 - 总市值（亿元）。
-2.48 - 市净率。
-94.77 - 委比。
-77.54 - 量比。
-1.10 - 内盘比。
-813 - 外盘比。
-86.82 - 昨收盘价。
-11.58 - 市盈率（静态）。
-13.22 - 市盈率（TTM）。 55-57. 空字段。
-1.09 - 市净率。
-119347.0310 - 成交金额（单位：万元）。
-0.0000 - 每股收益。
-0 - 每股净资产。
-空字段。
-GP-A - 股票类别（A股）。
--16.47 - 股息率（百分比）。
-3.88 - 股息额。
-5.30 - 资产负债比率。
-15.69 - 现金流。
-13.05 - 每股净利润。
-117.10 - 每股未分配利润。
-71.58 - 每股总收益。
-1.37 - 市净率（行业）。
--0.54 - ROE（净资产收益率）。
-9.60 - 总股本（亿股）。
-1502706768 - 流通股本（股）。
-1506445074 - 总股本（股）。
-70.27 - 持股比例（百分比）。
-1.58 - 市净率（个股）。
-1502706768 - 流通市值（股）。
-空字段。
-空字段。
--24.55 - 每股收益增长率。
-0.10 - 每股净资产增长率。
-空字段。
-CNY - 币种。
-0 - 保留字段。
-空字段。
-88.00 - 最新报价。
--754 - 最新价调整。
-*/
